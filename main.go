@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/go-units"
 	"github.com/jackc/pgx/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli/v2"
 	"github.com/warpcomdev/pgexport/scanner"
@@ -201,7 +202,11 @@ func (c config) Start(ctx context.Context, logger *slog.Logger, metrics scanner.
 			}
 		}
 	}()
-	promHandler := promhttp.Handler()
+	promHandler := promhttp.InstrumentMetricHandler(
+		prometheus.DefaultRegisterer, promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+			EnableOpenMetrics: true,
+		}),
+	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			defer func(body io.ReadCloser) {

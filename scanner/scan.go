@@ -9,46 +9,51 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/warpcomdev/pgexport/metrics"
 )
 
 type Metrics struct {
-	dbSize            *prometheus.GaugeVec
-	tableTotalSize    *prometheus.GaugeVec
-	tableRelSize      *prometheus.GaugeVec
-	tableIdxSize      *prometheus.GaugeVec
-	tableIsHypertable *prometheus.GaugeVec
+	gauges []*metrics.GaugeBatch
 }
+
+func (m Metrics) begin(ts time.Time) {
+	for _, gauge := range m.gauges {
+		gauge.Begin(ts)
+	}
+}
+
+func (m Metrics) commit() {
+	for _, gauge := range m.gauges {
+		gauge.Commit()
+	}
+}
+
+const (
+	dbSizeGauge = iota
+	tableTotalSizeGauge
+	tableRelSizeGauge
+	tableIdxSizeGauge
+	tableIsHypertableGauge
+	// total number of metrics
+	numMetrics
+)
 
 func New(prefix string) (Metrics, error) {
 	m := Metrics{
-		dbSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: prefix + "database_size",
-			Help: "Database size in bytes",
-		}, []string{"database"}),
-		tableTotalSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: prefix + "table_size",
-			Help: "Total table size in bytes",
-		}, []string{"database", "schema", "name", "kind"}),
-		tableRelSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: prefix + "table_relation_size",
-			Help: "Relation table size in bytes",
-		}, []string{"database", "schema", "name", "kind"}),
-		tableIdxSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: prefix + "table_index_size",
-			Help: "Index table size in bytes",
-		}, []string{"database", "schema", "name", "kind"}),
-		tableIsHypertable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: prefix + "table_is_hypertable",
-			Help: "Is hypertable",
-		}, []string{"database", "schema", "name"}),
+		// Debe respetar el mismo orden que las constantes!
+		gauges: []*metrics.GaugeBatch{
+			metrics.NewGaugeBatch(prefix+"database_size", "Database size in bytes", []string{"database"}),
+			metrics.NewGaugeBatch(prefix+"table_size", "Total table size in bytes", []string{"database", "schema", "name", "kind"}),
+			metrics.NewGaugeBatch(prefix+"table_relation_size", "Relation table size in bytes", []string{"database", "schema", "name", "kind"}),
+			metrics.NewGaugeBatch(prefix+"table_index_size", "Index table size in bytes", []string{"database", "schema", "name", "kind"}),
+			metrics.NewGaugeBatch(prefix+"table_is_hypertable", "Is hypertable", []string{"database", "schema", "name"}),
+		},
 	}
-	return m, errors.Join(
-		prometheus.Register(m.dbSize),
-		prometheus.Register(m.tableTotalSize),
-		prometheus.Register(m.tableRelSize),
-		prometheus.Register(m.tableIdxSize),
-		prometheus.Register(m.tableIsHypertable),
-	)
+	gaugeErr := make([]error, 0, numMetrics)
+	for _, gauge := range m.gauges {
+		gaugeErr = append(gaugeErr, prometheus.Register(gauge))
+	}
+	return m, errors.Join(gaugeErr...)
 }
 
 // scanner es un sink de filas
@@ -98,8 +103,8 @@ func (m Metrics) db(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) ([
 			return err
 		}
 		logger.Debug("Scanned database size", "database", database, "size", value)
+		m.gauges[dbSizeGauge].Set([]string{database}, float64(value))
 		dbnames = append(dbnames, database)
-		m.dbSize.WithLabelValues(database).Set(float64(value))
 		return nil
 	}
 	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
@@ -159,11 +164,13 @@ func (m Metrics) table(ctx context.Context, logger *slog.Logger, conn *pgx.Conn,
 		`
 	}
 	scanner := func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
-		var isHypertable int
-		var schema string
-		var name string
-		var tot_size int64
-		var rel_size int64
+		var (
+			isHypertable int
+			schema       string
+			name         string
+			tot_size     int64
+			rel_size     int64
+		)
 		if err := rows.Scan(&isHypertable, &schema, &name, &tot_size, &rel_size); err != nil {
 			return err
 		}
@@ -174,10 +181,11 @@ func (m Metrics) table(ctx context.Context, logger *slog.Logger, conn *pgx.Conn,
 		if isHypertable > 0 {
 			kind = "ht"
 		}
-		m.tableTotalSize.WithLabelValues(database, schema, name, kind).Set(float64(tot_size))
-		m.tableRelSize.WithLabelValues(database, schema, name, kind).Set(float64(rel_size))
-		m.tableIdxSize.WithLabelValues(database, schema, name, kind).Set(float64(tot_size - rel_size))
-		m.tableIsHypertable.WithLabelValues(database, schema, name).Set(float64(isHypertable))
+		m.gauges[tableIsHypertableGauge].Set([]string{database, schema, name}, float64(isHypertable))
+		labels := []string{database, schema, name, kind}
+		m.gauges[tableTotalSizeGauge].Set(labels, float64(tot_size))
+		m.gauges[tableRelSizeGauge].Set(labels, float64(rel_size))
+		m.gauges[tableIdxSizeGauge].Set(labels, float64(tot_size-rel_size))
 		return nil
 	}
 	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
@@ -215,6 +223,10 @@ func (m Metrics) Scan(ctx context.Context, logger *slog.Logger, cfg Config, fact
 		logger = slog.Default()
 	}
 	logger.Info("Scanning databases", "options", cfg)
+	// Begin metrics collection
+	m.begin(time.Now())
+	// always commit, even in case of errors collectig some stat.
+	defer m.commit()
 	// Wrap this inside a closure, for deferring
 	dbNames, err := func() ([]string, error) {
 		conn, err := factory.Connect(ctx, logger, cfg.InitialDB)
