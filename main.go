@@ -206,7 +206,7 @@ func (c config) Start(ctx context.Context, logger *slog.Logger) http.Handler {
 					sharedBuffer = buffer
 				}()
 				logger.Debug("resetting scan timer", "interval", c.Interval)
-				timer.Reset(time.Duration(c.Interval) * time.Minute)
+				timer.Reset(c.Interval)
 			}
 		}
 	}()
