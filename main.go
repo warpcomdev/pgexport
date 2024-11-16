@@ -40,6 +40,7 @@ func defaults() config {
 	return config{
 		Address:    ":8080",
 		Timeout:    5 * time.Second,
+		Host:       "localhost",
 		Port:       5432,
 		Username:   "postgres",
 		InitialDB:  scanDefaults.InitialDB,
@@ -57,7 +58,7 @@ func (c *config) Flags() []cli.Flag {
 			Value:       c.Address,
 			Destination: &c.Address,
 			Usage:       "address to listen on",
-			Required:    true,
+			Required:    false,
 		},
 		&cli.DurationFlag{
 			Name:        "timeout",
@@ -65,7 +66,7 @@ func (c *config) Flags() []cli.Flag {
 			Usage:       "HTTP timeout",
 			Value:       c.Timeout,
 			Destination: &c.Timeout,
-			Required:    true,
+			Required:    false,
 		},
 		&cli.StringFlag{
 			Name:        "host",
@@ -73,7 +74,7 @@ func (c *config) Flags() []cli.Flag {
 			Usage:       "database host",
 			Value:       c.Host,
 			Destination: &c.Host,
-			Required:    true,
+			Required:    false,
 		},
 		&cli.IntFlag{
 			Name:        "port",
@@ -81,7 +82,7 @@ func (c *config) Flags() []cli.Flag {
 			Usage:       "database port",
 			Value:       c.Port,
 			Destination: &c.Port,
-			Required:    true,
+			Required:    false,
 		},
 		&cli.StringFlag{
 			Name:        "username",
@@ -89,7 +90,7 @@ func (c *config) Flags() []cli.Flag {
 			Usage:       "database user",
 			Value:       c.Username,
 			Destination: &c.Username,
-			Required:    true,
+			Required:    false,
 		},
 		&cli.StringFlag{
 			Name:        "initialdb",
@@ -131,7 +132,7 @@ func (c *config) Flags() []cli.Flag {
 			Value:       c.Interval,
 			Destination: &c.Interval,
 			Usage:       "polling interval",
-			Required:    true,
+			Required:    false,
 		},
 		&cli.StringFlag{
 			Name:        "prefix",
