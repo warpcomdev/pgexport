@@ -16,9 +16,9 @@ type Metrics struct {
 	gauges []*metrics.GaugeBatch
 }
 
-func (m Metrics) begin(ts time.Time) {
+func (m Metrics) begin() {
 	for _, gauge := range m.gauges {
-		gauge.Begin(ts)
+		gauge.Begin()
 	}
 }
 
@@ -223,9 +223,8 @@ func (m Metrics) Scan(ctx context.Context, logger *slog.Logger, cfg Config, fact
 		logger = slog.Default()
 	}
 	logger.Info("Scanning databases", "options", cfg)
-	// Begin metrics collection
-	m.begin(time.Now())
-	// always commit, even in case of errors collectig some stat.
+	// Begin metrics collection, and cooit inconditionally
+	m.begin()
 	defer m.commit()
 	// Wrap this inside a closure, for deferring
 	dbNames, err := func() ([]string, error) {

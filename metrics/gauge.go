@@ -16,11 +16,36 @@ type sample struct {
 
 // Batch of metrics identified by the same timestamp
 type batch struct {
-	ts      int64
-	samples []sample
+	timestamp int64
+	samples   []sample
 }
 
-// GaugeBatch is a vector of gauges with a common timestamp
+// GaugeBatch is a set of gauges that we want to treat as a batch
+//
+// The default GaugeVec type in prometheus does not track the time
+// the gauge was updated, and therefore it does not expose it when collected
+// by prometheus.
+//
+// When a gauge is updated very infrequenty, we might want to expose
+// this information to ptometheus, so it can notice that not only the
+// gauge has not changed, but in fact it has not had any update since
+// the previous collection.
+//
+// The GaugeBatch tracks the timestamp of the last update, in batches.
+// The application is expected to perform a batch of work and update
+// all the metrics associated to that batch "at once".
+//
+// The metrics associated to a batch will expose the timestamp
+// when the batch was finished.
+//
+// This collector is simplified to workwith the following assumption:
+//
+//   - The application wil always begin a batch with  `Begin`, before
+//     setting any value in the gauge.
+//   - Batch will be closed with `Commit`.
+//   - Inside a batch, a metric is updated at most once. I.E. for a
+//     given set of labels, there is a single value in the whole batch.
+//   - The values wont be exposed until the batch is finished.
 type GaugeBatch struct {
 	lock       sync.Mutex
 	labelNames []string
@@ -37,7 +62,7 @@ func (c *GaugeBatch) Describe(ch chan<- *prometheus.Desc) {
 // gaugeProxy implements the Metric interface for prometheus
 type gaugeProxy struct {
 	descriptor *prometheus.Desc
-	ts         *int64
+	timestamp  *int64
 	label      []*dto.LabelPair
 	gauge      *dto.Gauge
 }
@@ -49,7 +74,7 @@ func (g gaugeProxy) Desc() *prometheus.Desc {
 
 // Write implements Metric
 func (g gaugeProxy) Write(m *dto.Metric) error {
-	m.TimestampMs = g.ts
+	m.TimestampMs = g.timestamp
 	m.Gauge = g.gauge
 	m.Label = g.label
 	return nil
@@ -80,7 +105,7 @@ func (c *GaugeBatch) Collect(ch chan<- prometheus.Metric) {
 			// Y envío la métrica al canal
 			mp := gaugeProxy{
 				descriptor: c.descriptor,
-				ts:         &snap.ts,
+				timestamp:  &snap.timestamp,
 				label:      lp[metric_idx*scale : (metric_idx+1)*scale],
 				gauge:      &gauges[metric_idx],
 			}
@@ -90,13 +115,13 @@ func (c *GaugeBatch) Collect(ch chan<- prometheus.Metric) {
 }
 
 // Begin a new batch
-func (c *GaugeBatch) Begin(ts time.Time) {
-	c.current.ts = ts.UnixMilli()
+func (c *GaugeBatch) Begin() {
 	c.current.samples = make([]sample, 0, 16)
 }
 
 // Commit the current batch
 func (c *GaugeBatch) Commit() {
+	c.current.timestamp = time.Now().UnixMilli()
 	c.lock.Lock()
 	c.last = c.current
 	c.current.samples = nil
