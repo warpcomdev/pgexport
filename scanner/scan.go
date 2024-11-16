@@ -2,37 +2,53 @@ package scanner
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metric define los atributos de una métrica
-type Metric struct {
-	Timestamp time.Time
-	Name      string
-	Value     float64
+type Metrics struct {
+	dbSize            *prometheus.GaugeVec
+	tableTotalSize    *prometheus.GaugeVec
+	tableRelSize      *prometheus.GaugeVec
+	tableIdxSize      *prometheus.GaugeVec
+	tableIsHypertable *prometheus.GaugeVec
 }
 
-// Writer es un sink de métricas
-type Writer interface {
-	Write(ctx context.Context, logger *slog.Logger, labels map[string]string, metrics []Metric) error
-}
-
-// WriterFunc es un adaptador para la interfaz Writer
-type WriterFunc func(ctx context.Context, logger *slog.Logger, laels map[string]string, metrics []Metric) error
-
-// Write implementa Writer
-func (f WriterFunc) Write(ctx context.Context, logger *slog.Logger, labels map[string]string, metrics []Metric) error {
-	_ = Writer(f) // Make sure WriterFunc implements Writer
-	return f(ctx, logger, labels, metrics)
+func New(prefix string) (Metrics, error) {
+	m := Metrics{
+		dbSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: prefix + "database_size",
+			Help: "Database size in bytes",
+		}, []string{"database"}),
+		tableTotalSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: prefix + "table_size",
+			Help: "Total table size in bytes",
+		}, []string{"database", "schema", "name", "kind"}),
+		tableRelSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: prefix + "table_relation_size",
+			Help: "Relation table size in bytes",
+		}, []string{"database", "schema", "name", "kind"}),
+		tableIdxSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: prefix + "table_index_size",
+			Help: "Index table size in bytes",
+		}, []string{"database", "schema", "name", "kind"}),
+		tableIsHypertable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: prefix + "table_is_hypertable",
+			Help: "Is hypertable",
+		}, []string{"database", "schema", "name"}),
+	}
+	return m, errors.Join(
+		prometheus.Register(m.dbSize),
+		prometheus.Register(m.tableTotalSize),
+		prometheus.Register(m.tableRelSize),
+		prometheus.Register(m.tableIdxSize),
+		prometheus.Register(m.tableIsHypertable),
+	)
 }
 
 // scanner es un sink de filas
@@ -71,8 +87,8 @@ func doQuery(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, query str
 	return nil
 }
 
-// dbMetrics recopila métricas globales de las bases de datos
-func dbMetrics(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, w Writer) ([]string, error) {
+// db recopila métricas globales de las bases de datos
+func (m Metrics) db(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) ([]string, error) {
 	query := "SELECT datname, pg_database_size(datname) FROM pg_database"
 	dbnames := make([]string, 0, 16)
 	scanner := func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
@@ -82,16 +98,9 @@ func dbMetrics(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, w Write
 			return err
 		}
 		logger.Debug("Scanned database size", "database", database, "size", value)
-		labels := map[string]string{"database": database}
-		metrics := []Metric{
-			{
-				Timestamp: time.Now(),
-				Name:      "database_size_bytes",
-				Value:     float64(value),
-			},
-		}
 		dbnames = append(dbnames, database)
-		return w.Write(ctx, logger, labels, metrics)
+		m.dbSize.WithLabelValues(database).Set(float64(value))
+		return nil
 	}
 	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
 		return nil, err
@@ -117,8 +126,8 @@ func hasTimescale(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) (boo
 	return true, nil
 }
 
-// tableMetrics recopila métricas individuales de las tablas
-func tableMetrics(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, w Writer, threshold int64) error {
+// table recopila métricas individuales de las tablas
+func (m Metrics) table(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, database string, threshold int64) error {
 	var query string
 	ts, err := hasTimescale(ctx, logger, conn)
 	if err != nil {
@@ -165,35 +174,11 @@ func tableMetrics(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, w Wr
 		if isHypertable > 0 {
 			kind = "ht"
 		}
-		labels := map[string]string{
-			"schema": schema,
-			"name":   name,
-			"kind":   kind,
-		}
-		now := time.Now()
-		metrics := []Metric{
-			{
-				Timestamp: now,
-				Name:      "table_is_hypertable",
-				Value:     float64(isHypertable),
-			},
-			{
-				Timestamp: now,
-				Name:      "table_size_bytes",
-				Value:     float64(tot_size),
-			},
-			{
-				Timestamp: now,
-				Name:      "table_relation_size_bytes",
-				Value:     float64(rel_size),
-			},
-			{
-				Timestamp: now,
-				Name:      "table_index_size_bytes",
-				Value:     float64(tot_size - rel_size),
-			},
-		}
-		return w.Write(ctx, logger, labels, metrics)
+		m.tableTotalSize.WithLabelValues(database, schema, name, kind).Set(float64(tot_size))
+		m.tableRelSize.WithLabelValues(database, schema, name, kind).Set(float64(rel_size))
+		m.tableIdxSize.WithLabelValues(database, schema, name, kind).Set(float64(tot_size - rel_size))
+		m.tableIsHypertable.WithLabelValues(database, schema, name).Set(float64(isHypertable))
+		return nil
 	}
 	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
 		return err
@@ -225,7 +210,7 @@ func Defaults() Config {
 	}
 }
 
-func Scan(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory, w Writer) error {
+func (m Metrics) Scan(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -237,7 +222,7 @@ func Scan(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory,
 			return nil, err
 		}
 		defer factory.Dispose(ctx, logger, conn, cfg.InitialDB)
-		return dbMetrics(ctx, logger, conn, w)
+		return m.db(ctx, logger, conn)
 	}()
 	if err != nil {
 		logger.Error(err.Error(), "op", "db_metrics")
@@ -246,12 +231,12 @@ func Scan(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory,
 	logger.Info("Databases found", "count", len(dbNames))
 	dbErrors := make([]error, 0, len(dbNames))
 	for _, database := range dbNames {
-		dbErrors = append(dbErrors, scanDatabase(ctx, logger, cfg, factory, w, database))
+		dbErrors = append(dbErrors, m.scanDatabase(ctx, logger, cfg, factory, database))
 	}
 	return errors.Join(dbErrors...)
 }
 
-func scanDatabase(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory, w Writer, database string) error {
+func (m Metrics) scanDatabase(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory, database string) error {
 	if cfg.Exceptions != nil {
 		for _, exc := range cfg.Exceptions {
 			match, err := filepath.Match(exc, database)
@@ -269,10 +254,6 @@ func scanDatabase(ctx context.Context, logger *slog.Logger, cfg Config, factory 
 		time.Sleep(cfg.Pause)
 	}
 	dbLogger.Info("scanning tables")
-	dbWriter := WriterFunc(func(ctx context.Context, dbLogger *slog.Logger, labels map[string]string, metrics []Metric) error {
-		labels["database"] = database
-		return w.Write(ctx, dbLogger, labels, metrics)
-	})
 	// Wrap this inside a closure, for deferring
 	err := func() error {
 		conn, err := factory.Connect(ctx, dbLogger, database)
@@ -280,37 +261,10 @@ func scanDatabase(ctx context.Context, logger *slog.Logger, cfg Config, factory 
 			return err
 		}
 		defer factory.Dispose(ctx, dbLogger, conn, database)
-		return tableMetrics(ctx, dbLogger, conn, dbWriter, cfg.Threshold)
+		return m.table(ctx, dbLogger, conn, database, cfg.Threshold)
 	}()
 	if err != nil {
 		dbLogger.Error(err.Error(), "op", "table_metrics")
 	}
 	return err
-}
-
-// TextWriter escribe las métricas en formato text-exposition a un writer
-func TextWriter(w io.Writer, prefix string) Writer {
-	return WriterFunc(func(ctx context.Context, logger *slog.Logger, labels map[string]string, metrics []Metric) error {
-		var l strings.Builder
-		sep := ""
-		for k, v := range labels {
-			// quoe and escape
-			escaped, err := json.Marshal(v)
-			if err != nil {
-				logger.Error(err.Error(), "op", "marshal", "k", k, "v", v)
-				return err
-			}
-			l.WriteString(sep)
-			sep = ","
-			l.WriteString(k)
-			l.WriteString("=")
-			l.Write(escaped)
-		}
-		for _, m := range metrics {
-			if _, err := fmt.Fprintf(w, "%s%s{%s} %f %d\n", prefix, m.Name, l.String(), m.Value, m.Timestamp.UnixMilli()); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }

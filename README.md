@@ -32,8 +32,8 @@ GLOBAL OPTIONS:
 
 Métricas exportadas:
 
-- `database_size_bytes`
+- `database_size`
 - `table_is_hypertable`
-- `table_size_bytes`
-- `table_relation_size_bytes`
-- `table_index_size_bytes`
+- `table_size`
+- `table_relation_size`
+- `table_index_size`

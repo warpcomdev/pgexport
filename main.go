@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,11 +10,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/docker/go-units"
 	"github.com/jackc/pgx/v5"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli/v2"
 	"github.com/warpcomdev/pgexport/scanner"
 )
@@ -182,13 +181,11 @@ func (c config) Dispose(ctx context.Context, logger *slog.Logger, conn *pgx.Conn
 	return conn.Close(ctx)
 }
 
-func (c config) Start(ctx context.Context, logger *slog.Logger) http.Handler {
+func (c config) Start(ctx context.Context, logger *slog.Logger, metrics scanner.Metrics) http.Handler {
 	scannerConfig := scanner.Defaults()
 	scannerConfig.InitialDB = c.InitialDB
 	scannerConfig.Threshold = c.Threshold
 	scannerConfig.Exceptions = append(scannerConfig.Exceptions, c.Exceptions...)
-	var sharedBuffer *bytes.Buffer
-	var bufferLock sync.Mutex
 	go func() {
 		timer := time.NewTimer(0)
 		for {
@@ -196,20 +193,15 @@ func (c config) Start(ctx context.Context, logger *slog.Logger) http.Handler {
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-				buffer := bytes.NewBuffer(nil)
-				if err := scanner.Scan(ctx, logger, scannerConfig, c, scanner.TextWriter(buffer, c.Prefix)); err != nil {
+				if err := metrics.Scan(ctx, logger, scannerConfig, c); err != nil {
 					logger.Error("failed to scan", "error", err)
 				}
-				func() {
-					bufferLock.Lock()
-					defer bufferLock.Unlock()
-					sharedBuffer = buffer
-				}()
 				logger.Debug("resetting scan timer", "interval", c.Interval)
 				timer.Reset(c.Interval)
 			}
 		}
 	}()
+	promHandler := promhttp.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			defer func(body io.ReadCloser) {
@@ -229,16 +221,7 @@ func (c config) Start(ctx context.Context, logger *slog.Logger) http.Handler {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		var buffer *bytes.Buffer
-		// Closure for defer
-		func() {
-			bufferLock.Lock()
-			defer bufferLock.Unlock()
-			buffer = sharedBuffer
-		}()
-		w.Header().Add("Content-Type", "text/plain; version=0.0.4")
-		w.WriteHeader(http.StatusOK)
-		w.Write(buffer.Bytes())
+		promHandler.ServeHTTP(w, r)
 	})
 }
 
@@ -259,11 +242,16 @@ func main() {
 			}
 			ctx, cancelFunc := context.WithCancel(context.Background())
 			defer cancelFunc()
+			metrics, err := scanner.New(cfg.Prefix)
+			if err != nil {
+				logger.Error("failed to create metrics", "error", err)
+				return err
+			}
 			server := http.Server{
 				Addr:         cfg.Address,
 				ReadTimeout:  time.Duration(cfg.Timeout) * time.Second,
 				WriteTimeout: time.Duration(cfg.Timeout) * time.Second,
-				Handler:      cfg.Start(ctx, logger),
+				Handler:      cfg.Start(ctx, logger, metrics),
 			}
 			logger.Info("Waiting for requests", "config", cfg)
 			return server.ListenAndServe()
