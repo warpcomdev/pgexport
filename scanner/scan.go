@@ -223,7 +223,7 @@ func Scan(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.Debug("Scanning databases", "options", cfg)
+	logger.Info("Scanning databases", "options", cfg)
 	// Wrap this inside a closure, for deferring
 	dbNames, err := func() ([]string, error) {
 		conn, err := factory.Connect(ctx, logger, cfg.InitialDB)

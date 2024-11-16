@@ -5,7 +5,7 @@ Esta aplicación exporta información sobre el tamaño de las bases de datos y t
 Modo de uso:
 
 ```bash
-rafa@btrfs:~/projects/pgexport$ ./pgexport --help
+$ ./pgexport  --help
 NAME:
    pgexport - Expose database and table sizes as Prometheus metrics
 
@@ -18,7 +18,7 @@ COMMANDS:
 GLOBAL OPTIONS:
    --address value, -a value                                      address to listen on (default: ":8080")
    --timeout value, -t value                                      HTTP timeout (default: 5s)
-   --host value, -H value                                         database host
+   --host value, -H value                                         database host (default: "localhost")
    --port value, -p value                                         database port (default: 5432)
    --username value, -U value                                     database user (default: "postgres")
    --initialdb value, -d value                                    initial database (default: "postgres")
@@ -26,7 +26,8 @@ GLOBAL OPTIONS:
    --threshold value, -T value                                    drop metrics for tables below this size (default: "1GB")
    --interval value, -i value                                     polling interval (default: 30m0s)
    --prefix value, -P value                                       prefijo para las métricas
-   --help, -h                                                     show help                                                  show help
+   --verbose, -v                                                  muestra logs verbosos (default: false)
+   --help, -h                                                     show help
 ```
 
 Métricas exportadas:

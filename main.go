@@ -33,6 +33,7 @@ type config struct {
 	Interval   time.Duration `json:"interval"`
 	Pause      time.Duration `json:"pause"`
 	Prefix     string        `json:"prefix"`
+	Verbose    bool          `json:"verbose"`
 }
 
 func defaults() config {
@@ -142,6 +143,14 @@ func (c *config) Flags() []cli.Flag {
 			Destination: &c.Prefix,
 			Required:    false,
 		},
+		&cli.BoolFlag{
+			Name:        "verbose",
+			Aliases:     []string{"v"},
+			Usage:       "muestra logs verbosos",
+			Value:       false,
+			Destination: &c.Verbose,
+			Required:    false,
+		},
 	}
 }
 
@@ -196,6 +205,7 @@ func (c config) Start(ctx context.Context, logger *slog.Logger) http.Handler {
 					defer bufferLock.Unlock()
 					sharedBuffer = buffer
 				}()
+				logger.Debug("resetting scan timer", "interval", c.Interval)
 				timer.Reset(time.Duration(c.Interval) * time.Minute)
 			}
 		}
@@ -243,6 +253,9 @@ func main() {
 			if err := cfg.Validate(); err != nil {
 				logger.Error("invalid configuration", "error", err.Error(), "config", cfg)
 				return err
+			}
+			if cfg.Verbose {
+				logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			}
 			ctx, cancelFunc := context.WithCancel(context.Background())
 			defer cancelFunc()
