@@ -104,7 +104,7 @@ func (c *config) Flags() []cli.Flag {
 		&cli.StringSliceFlag{
 			Name:    "exceptions",
 			Aliases: []string{"e"},
-			Usage:   fmt.Sprintf("databases to omit - besides '%s'", strings.Join(scanner.Defaults().Exceptions, "', '")),
+			Usage:   fmt.Sprintf("databases to omit - besides '%s' - supports shell file name patterns (https://pkg.go.dev/path/filepath#Match)", strings.Join(scanner.Defaults().Exceptions, "', '")),
 			Value:   cli.NewStringSlice(c.Exceptions...),
 			Action: func(_ *cli.Context, exc []string) error {
 				c.Exceptions = exc

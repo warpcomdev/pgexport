@@ -3,10 +3,11 @@ package scanner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -112,7 +113,7 @@ func hasTimescale(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) (boo
 		logger.Debug("Database does not have timescale extension")
 		return false, nil
 	}
-	logger.Info("Database has timescale extension", "version", extVersion)
+	logger.Debug("Database has timescale extension", "version", extVersion)
 	return true, nil
 }
 
@@ -160,9 +161,14 @@ func tableMetrics(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, w Wr
 		if tot_size < threshold {
 			return nil
 		}
+		kind := "rel"
+		if isHypertable > 0 {
+			kind = "ht"
+		}
 		labels := map[string]string{
 			"schema": schema,
 			"name":   name,
+			"kind":   kind,
 		}
 		now := time.Now()
 		metrics := []Metric{
@@ -238,34 +244,48 @@ func Scan(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory,
 		return err
 	}
 	logger.Info("Databases found", "count", len(dbNames))
+	dbErrors := make([]error, 0, len(dbNames))
 	for _, database := range dbNames {
-		if cfg.Exceptions != nil && slices.Contains(cfg.Exceptions, database) {
-			continue
-		}
-		dbLogger := logger.With("database", database)
-		if cfg.Pause > 0 {
-			dbLogger.Info("pausing before next scan", "pause", cfg.Pause.String())
-			time.Sleep(cfg.Pause)
-		}
-		dbLogger.Info("scanning tables")
-		dbWriter := WriterFunc(func(ctx context.Context, dbLogger *slog.Logger, labels map[string]string, metrics []Metric) error {
-			labels["database"] = database
-			return w.Write(ctx, dbLogger, labels, metrics)
-		})
-		// Wrap this inside a closure, for deferring
-		err = func() error {
-			conn, err := factory.Connect(ctx, dbLogger, database)
+		dbErrors = append(dbErrors, scanDatabase(ctx, logger, cfg, factory, w, database))
+	}
+	return errors.Join(dbErrors...)
+}
+
+func scanDatabase(ctx context.Context, logger *slog.Logger, cfg Config, factory Factory, w Writer, database string) error {
+	if cfg.Exceptions != nil {
+		for _, exc := range cfg.Exceptions {
+			match, err := filepath.Match(exc, database)
 			if err != nil {
-				return err
+				logger.Warn(err.Error(), "op", "match", "pattern", exc, "database", database)
+			} else if match {
+				logger.Info("skipping database", "database", database)
+				return nil
 			}
-			defer factory.Dispose(ctx, dbLogger, conn, database)
-			return tableMetrics(ctx, dbLogger, conn, dbWriter, cfg.Threshold)
-		}()
-		if err != nil {
-			dbLogger.Error(err.Error(), "op", "table_metrics")
 		}
 	}
-	return nil
+	dbLogger := logger.With("database", database)
+	if cfg.Pause > 0 {
+		dbLogger.Info("pausing before next scan", "pause", cfg.Pause.String())
+		time.Sleep(cfg.Pause)
+	}
+	dbLogger.Info("scanning tables")
+	dbWriter := WriterFunc(func(ctx context.Context, dbLogger *slog.Logger, labels map[string]string, metrics []Metric) error {
+		labels["database"] = database
+		return w.Write(ctx, dbLogger, labels, metrics)
+	})
+	// Wrap this inside a closure, for deferring
+	err := func() error {
+		conn, err := factory.Connect(ctx, dbLogger, database)
+		if err != nil {
+			return err
+		}
+		defer factory.Dispose(ctx, dbLogger, conn, database)
+		return tableMetrics(ctx, dbLogger, conn, dbWriter, cfg.Threshold)
+	}()
+	if err != nil {
+		dbLogger.Error(err.Error(), "op", "table_metrics")
+	}
+	return err
 }
 
 // TextWriter escribe las métricas en formato text-exposition a un writer
