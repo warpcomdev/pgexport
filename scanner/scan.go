@@ -98,20 +98,56 @@ func dbMetrics(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, w Write
 	return dbnames, nil
 }
 
+// hasTimescale finds out if a database has timescale extension
+func hasTimescale(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) (bool, error) {
+	extVersion := ""
+	query := "SELECT extversion FROM pg_extension where extname = 'timescaledb'"
+	scanner := func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
+		return rows.Scan(&extVersion)
+	}
+	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
+		return false, err
+	}
+	if extVersion == "" {
+		logger.Debug("Database does not have timescale extension")
+		return false, nil
+	}
+	logger.Info("Database has timescale extension", "version", extVersion)
+	return true, nil
+}
+
 // tableMetrics recopila métricas individuales de las tablas
 func tableMetrics(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, w Writer, threshold int64) error {
-	query := `
-	SELECT
-		CASE WHEN t2.hypertable_name IS NULL THEN 0 ELSE 1 END as is_hypertable,
-		coalesce(t2.hypertable_schema, t1.table_schema) AS table_schema,
-		coalesce(t2.hypertable_name, t1.table_name) as table_name,
-		SUM(pg_total_relation_size(concat(quote_ident(t1.table_schema), '.', quote_ident(t1.table_name)))) as total_size,
-		SUM(pg_relation_size(concat(quote_ident(t1.table_schema), '.', quote_ident(t1.table_name)))) as relation_size
-	FROM information_schema.tables t1
-	LEFT JOIN timescaledb_information.chunks t2
-	ON t1.table_name=t2.chunk_name AND t1.table_schema=t2.chunk_schema
-	GROUP BY 1, 2, 3
-	`
+	var query string
+	ts, err := hasTimescale(ctx, logger, conn)
+	if err != nil {
+		return err
+	}
+	if ts {
+		query = `
+		SELECT
+			CASE WHEN t2.hypertable_name IS NULL THEN 0 ELSE 1 END as is_hypertable,
+			coalesce(t2.hypertable_schema, t1.table_schema) AS table_schema,
+			coalesce(t2.hypertable_name, t1.table_name) as table_name,
+			SUM(pg_total_relation_size(concat(quote_ident(t1.table_schema), '.', quote_ident(t1.table_name)))) as total_size,
+			SUM(pg_relation_size(concat(quote_ident(t1.table_schema), '.', quote_ident(t1.table_name)))) as relation_size
+		FROM information_schema.tables t1
+		LEFT JOIN timescaledb_information.chunks t2
+		ON t1.table_name=t2.chunk_name AND t1.table_schema=t2.chunk_schema
+		GROUP BY 1, 2, 3
+		`
+	} else {
+		query = `
+		SELECT
+			0 AS is_hypertable,
+			t1.table_schema AS table_schema,
+			t1.table_name as table_name,
+			SUM(pg_total_relation_size(concat(quote_ident(t1.table_schema), '.', quote_ident(t1.table_name)))) as total_size,
+			SUM(pg_relation_size(concat(quote_ident(t1.table_schema), '.', quote_ident(t1.table_name)))) as relation_size
+		FROM information_schema.tables t1
+		GROUP BY 1, 2, 3
+		`
+	}
 	scanner := func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
 		var isHypertable int
 		var schema string
