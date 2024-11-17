@@ -176,17 +176,19 @@ func (c config) Connect(ctx context.Context, logger *slog.Logger, database strin
 	if err != nil {
 		return nil, err
 	}
-	if err := readOnly(ctx, conn); err != nil {
+	if err := readOnly(ctx, logger, conn); err != nil {
 		conn.Close(ctx)
 		return nil, err
 	}
 	return conn, nil
 }
 
-func readOnly(ctx context.Context, conn *pgx.Conn) error {
+func readOnly(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) error {
 	if _, err := conn.Exec(ctx, "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"); err != nil {
+		logger.Error("failed to set session characteristics", "error", err)
 		return err
 	}
+	logger.Info("session characteristics set to read only")
 	return nil
 }
 
