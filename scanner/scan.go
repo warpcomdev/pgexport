@@ -56,22 +56,11 @@ func New(registerer prometheus.Registerer, prefix string) (Metrics, error) {
 	return m, errors.Join(gaugeErr...)
 }
 
-// scanner es un sink de filas
-type scanner interface {
-	Scan(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error
-}
-
-// scannerFunc es un adaptador para la interfaz Scanner
+// scannerFunc es una función que convierte filas en métricas
 type scannerFunc func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error
 
-// Scan implementa Scanner
-func (f scannerFunc) Scan(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
-	_ = scanner(f) // Make sure scannerFunc implements scanner
-	return f(ctx, logger, rows)
-}
-
-// doQuery ejecua una query y envía todas las filas al scanner
-func doQuery(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, query string, scanner scanner) error {
+// doQuery ejecuta una query y envía todas las filas al scanner
+func doQuery(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, query string, scanner scannerFunc) error {
 	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		logger.Error(err.Error(), "op", "query", "query", query)
@@ -79,7 +68,7 @@ func doQuery(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, query str
 	}
 	defer rows.Close()
 	for rows.Next() {
-		err = scanner.Scan(ctx, logger, rows)
+		err = scanner(ctx, logger, rows)
 		if err != nil {
 			logger.Error(err.Error(), "op", "scan")
 			return err
@@ -107,7 +96,7 @@ func (m Metrics) db(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) ([
 		dbnames = append(dbnames, database)
 		return nil
 	}
-	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
+	if err := doQuery(ctx, logger, conn, query, scanner); err != nil {
 		return nil, err
 	}
 	return dbnames, nil
@@ -117,10 +106,10 @@ func (m Metrics) db(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) ([
 func hasTimescale(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) (bool, error) {
 	extVersion := ""
 	query := "SELECT extversion FROM pg_extension where extname = 'timescaledb'"
-	scanner := func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
+	rscan := func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
 		return rows.Scan(&extVersion)
 	}
-	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
+	if err := doQuery(ctx, logger, conn, query, rscan); err != nil {
 		return false, err
 	}
 	if extVersion == "" {
@@ -188,7 +177,7 @@ func (m Metrics) table(ctx context.Context, logger *slog.Logger, conn *pgx.Conn,
 		m.gauges[tableIdxSizeGauge].Set(labels, float64(tot_size-rel_size))
 		return nil
 	}
-	if err := doQuery(ctx, logger, conn, query, scannerFunc(scanner)); err != nil {
+	if err := doQuery(ctx, logger, conn, query, scanner); err != nil {
 		return err
 	}
 	return nil
