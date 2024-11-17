@@ -236,7 +236,7 @@ func (c config) Start(ctx context.Context, logger *slog.Logger, metrics scanner.
 			return
 		}
 		if r.URL.Path == "/healthz" {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if r.URL.Path != "/metrics" {
