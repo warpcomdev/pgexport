@@ -195,12 +195,18 @@ func (c config) Dispose(ctx context.Context, logger *slog.Logger, conn *pgx.Conn
 	return conn.Close(ctx)
 }
 
-func (c config) Start(ctx context.Context, logger *slog.Logger, metrics scanner.Metrics) http.Handler {
-	scannerConfig := scanner.Defaults()
-	scannerConfig.InitialDB = c.InitialDB
-	scannerConfig.Threshold = c.Threshold
-	scannerConfig.Exceptions = append(scannerConfig.Exceptions, c.Exceptions...)
+func (c config) Start(ctx context.Context, logger *slog.Logger) (http.Handler, error) {
+	registry := prometheus.NewRegistry()
+	metrics, err := scanner.New(registry, c.Prefix)
+	if err != nil {
+		logger.Error("failed to create metrics", "error", err)
+		return nil, err
+	}
 	go func() {
+		scannerConfig := scanner.Defaults()
+		scannerConfig.InitialDB = c.InitialDB
+		scannerConfig.Threshold = c.Threshold
+		scannerConfig.Exceptions = append(scannerConfig.Exceptions, c.Exceptions...)
 		timer := time.NewTimer(0)
 		for {
 			select {
@@ -215,8 +221,9 @@ func (c config) Start(ctx context.Context, logger *slog.Logger, metrics scanner.
 			}
 		}
 	}()
+	procHandler := promhttp.Handler()
 	promHandler := promhttp.InstrumentMetricHandler(
-		prometheus.DefaultRegisterer, promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+		registry, promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 			EnableOpenMetrics: true,
 		}),
 	)
@@ -239,12 +246,16 @@ func (c config) Start(ctx context.Context, logger *slog.Logger, metrics scanner.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if r.URL.Path != "/metrics" {
-			w.WriteHeader(http.StatusNotFound)
+		if r.URL.Path == "/process/metrics" {
+			procHandler.ServeHTTP(w, r)
 			return
 		}
-		promHandler.ServeHTTP(w, r)
-	})
+		if r.URL.Path == "/metrics" {
+			promHandler.ServeHTTP(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}), nil
 }
 
 func main() {
@@ -264,16 +275,16 @@ func main() {
 			}
 			ctx, cancelFunc := context.WithCancel(context.Background())
 			defer cancelFunc()
-			metrics, err := scanner.New(cfg.Prefix)
+			handler, err := cfg.Start(ctx, logger)
 			if err != nil {
-				logger.Error("failed to create metrics", "error", err)
+				logger.Error("failed to start", "error", err)
 				return err
 			}
 			server := http.Server{
 				Addr:         cfg.Address,
 				ReadTimeout:  time.Duration(cfg.Timeout) * time.Second,
 				WriteTimeout: time.Duration(cfg.Timeout) * time.Second,
-				Handler:      cfg.Start(ctx, logger, metrics),
+				Handler:      handler,
 			}
 			logger.Info("Waiting for requests", "config", cfg)
 			return server.ListenAndServe()

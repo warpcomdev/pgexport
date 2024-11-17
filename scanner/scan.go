@@ -38,7 +38,7 @@ const (
 	numMetrics
 )
 
-func New(prefix string) (Metrics, error) {
+func New(registerer prometheus.Registerer, prefix string) (Metrics, error) {
 	m := Metrics{
 		// Debe respetar el mismo orden que las constantes!
 		gauges: []*metrics.GaugeBatch{
@@ -51,7 +51,7 @@ func New(prefix string) (Metrics, error) {
 	}
 	gaugeErr := make([]error, 0, numMetrics)
 	for _, gauge := range m.gauges {
-		gaugeErr = append(gaugeErr, prometheus.Register(gauge))
+		gaugeErr = append(gaugeErr, registerer.Register(gauge))
 	}
 	return m, errors.Join(gaugeErr...)
 }
