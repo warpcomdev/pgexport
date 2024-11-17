@@ -74,6 +74,7 @@ func (g gaugeProxy) Desc() *prometheus.Desc {
 
 // Write implements Metric
 func (g gaugeProxy) Write(m *dto.Metric) error {
+	// Nota: no sé si se supone que esta función debe adquirir el lock del gauge
 	m.TimestampMs = g.timestamp
 	m.Gauge = g.gauge
 	m.Label = g.label
