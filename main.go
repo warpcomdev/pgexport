@@ -188,7 +188,7 @@ func readOnly(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) error {
 		logger.Error("failed to set session characteristics", "error", err)
 		return err
 	}
-	logger.Info("session characteristics set to read only")
+	logger.Debug("session characteristics set to read only")
 	return nil
 }
 
