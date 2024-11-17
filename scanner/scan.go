@@ -94,7 +94,7 @@ func doQuery(ctx context.Context, logger *slog.Logger, conn *pgx.Conn, query str
 
 // db recopila métricas globales de las bases de datos
 func (m Metrics) db(ctx context.Context, logger *slog.Logger, conn *pgx.Conn) ([]string, error) {
-	query := "SELECT datname, pg_database_size(datname) FROM pg_database"
+	query := "SELECT datname, pg_database_size(datname) FROM pg_database WHERE datallowconn = true AND datistemplate = false"
 	dbnames := make([]string, 0, 16)
 	scanner := func(ctx context.Context, logger *slog.Logger, rows pgx.Rows) error {
 		var database string

@@ -26,7 +26,6 @@ type config struct {
 	Host       string        `json:"host"`
 	Port       int           `json:"port"`
 	Username   string        `json:"username"`
-	Password   string        `json:"-"`
 	InitialDB  string        `json:"initialdb"`
 	Exceptions []string      `json:"exceptions"`
 	Threshold  int64         `json:"threshold"`
@@ -168,13 +167,27 @@ func (c *config) Validate() error {
 	if passwd == "" {
 		return errors.New("PGPASSWORD environment must be set")
 	}
-	c.Password = passwd
 	return nil
 }
 
 func (c config) Connect(ctx context.Context, logger *slog.Logger, database string) (*pgx.Conn, error) {
-	connString := fmt.Sprintf("postgres://%s:%s@%s:%d/%s", c.Username, c.Password, c.Host, c.Port, database)
-	return pgx.Connect(ctx, connString)
+	connString := fmt.Sprintf("postgres://%s@%s:%d/%s", c.Username, c.Host, c.Port, database)
+	conn, err := pgx.Connect(ctx, connString)
+	if err != nil {
+		return nil, err
+	}
+	if err := readOnly(ctx, conn); err != nil {
+		conn.Close(ctx)
+		return nil, err
+	}
+	return conn, nil
+}
+
+func readOnly(ctx context.Context, conn *pgx.Conn) error {
+	if _, err := conn.Exec(ctx, "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Dispose of the connection to the database
@@ -220,6 +233,10 @@ func (c config) Start(ctx context.Context, logger *slog.Logger, metrics scanner.
 		}
 		if r.URL.Path == "/" {
 			http.Redirect(w, r, "/metrics", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		if r.URL.Path != "/metrics" {
